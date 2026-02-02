@@ -93,6 +93,20 @@ while (pass < maxPasses && lastCount > 0) {
 }
 
 println(s"Final delete file count: ${lastCount}")
+
+// Expire old snapshots to clean up references to old delete files
+try {
+  val expireResult = SparkActions.get(spark)
+    .expireSnapshots(table)
+    .retainLast(1)
+    .execute()
+  println(s"Expired snapshots: deleted=${expireResult.deletedDataFilesCount()} data files, " +
+    s"${expireResult.deletedDeleteFilesCount()} delete files, " +
+    s"${expireResult.deletedManifestsCount()} manifests")
+} catch {
+  case e: Exception => println(s"expireSnapshots skipped: ${e.getMessage}")
+}
+
 spark.stop()
 System.exit(0)
 SCALA

@@ -18,6 +18,18 @@ Databricks Unity Catalog cannot read Iceberg tables that have MoR delete files. 
 6. Delete files get merged into data files
 7. Databricks can now read the table
 
+## Compaction Process
+
+The compaction script runs three Iceberg maintenance procedures in order:
+
+| Step | Procedure | What it does |
+|------|-----------|--------------|
+| 1 | `rewriteDataFiles` | Merges position delete files INTO new data files. Creates new data files without the deleted rows. |
+| 2 | `rewritePositionDeletes` | Cleans up any remaining position delete file fragments. |
+| 3 | `expireSnapshots` | Removes old snapshot references, allowing old files to be garbage collected. |
+
+This sequence guarantees delete files are fully removed from the table metadata.
+
 ## Architecture
 
 ```
