@@ -83,6 +83,35 @@ aws s3api put-bucket-notification-configuration \
   --notification-configuration '{"EventBridgeConfiguration": {}}'
 ```
 
+## Multiple Tables
+
+This pipeline supports multiple tables automatically. When a delete file is created in S3, the Lambda:
+
+1. Extracts the S3 path (e.g., `mydb/mytable/data/...`)
+2. Converts it to a Glue table identifier (e.g., `glue_catalog.mydb.mytable`)
+3. Passes it to the Step Function
+4. Compacts only that specific table
+
+Each table has its own lock, so compactions for different tables can run in parallel.
+
+### Custom Table Mappings
+
+If your S3 paths don't match your Glue database/table names, use `TABLE_MAPPINGS`:
+
+```bash
+export TABLE_MAPPINGS="custom_path/my_table:actual_db.actual_table,another_path:other_db.other_table"
+./scripts/deploy_lambda_eventbridge.sh
+```
+
+### Allowlist Specific Tables
+
+To only trigger compaction for specific tables:
+
+```bash
+export TABLE_ALLOWLIST="mydb/table1,mydb/table2"
+./scripts/deploy_lambda_eventbridge.sh
+```
+
 ## Testing
 
 Run a delete on your table:

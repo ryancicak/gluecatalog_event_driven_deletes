@@ -9,6 +9,19 @@ LOCK_TABLE = os.environ.get("LOCK_TABLE", "iceberg_delete_locks")
 QUEUE_URL = os.environ.get("QUEUE_URL")
 RETRY_DELAY_SECONDS = int(os.environ.get("RETRY_DELAY_SECONDS", "300"))
 LOCK_TTL_SECONDS = int(os.environ.get("LOCK_TTL_SECONDS", "900"))
+CATALOG_NAME = os.environ.get("CATALOG_NAME", "glue_catalog")
+WAREHOUSE_S3 = os.environ.get("WAREHOUSE_S3", "")
+
+# TABLE_MAPPINGS format: "s3_prefix:db.table,s3_prefix2:db2.table2"
+# Example: "federation_demo_db_ryan/customers_iceberg:federation_demo_db_ryan.customers_iceberg"
+# If not set, auto-derives from S3 path (assumes path matches db/table structure)
+TABLE_MAPPINGS = {}
+for mapping in os.environ.get("TABLE_MAPPINGS", "").split(","):
+    mapping = mapping.strip()
+    if ":" in mapping:
+        s3_prefix, glue_table = mapping.split(":", 1)
+        TABLE_MAPPINGS[s3_prefix.strip()] = glue_table.strip()
+
 ALLOWLIST = {
     item.strip()
     for item in os.environ.get("TABLE_ALLOWLIST", "").split(",")
@@ -24,12 +37,33 @@ def _is_delete_file(key: str) -> bool:
     return key.endswith(DELETE_SUFFIX)
 
 
-def _table_id_from_key(key: str) -> str:
-    # Expect .../data/... or .../metadata/...; use prefix as table id.
+def _table_id_from_key(key: str) -> tuple:
+    """
+    Extract table info from S3 key.
+    Returns (s3_table_prefix, glue_table_identifier)
+    
+    Example:
+      key = "federation_demo_db_ryan/customers_iceberg/data/00001-deletes.parquet"
+      returns ("federation_demo_db_ryan/customers_iceberg", "glue_catalog.federation_demo_db_ryan.customers_iceberg")
+    """
+    # Extract S3 prefix (everything before /data/ or /metadata/)
+    s3_prefix = key
     for marker in ("/data/", "/metadata/"):
         if marker in key:
-            return key.split(marker)[0]
-    return key.rsplit("/", 1)[0]
+            s3_prefix = key.split(marker)[0]
+            break
+    else:
+        s3_prefix = key.rsplit("/", 1)[0]
+    
+    # Look up in explicit mappings first
+    if s3_prefix in TABLE_MAPPINGS:
+        glue_table = f"{CATALOG_NAME}.{TABLE_MAPPINGS[s3_prefix]}"
+    else:
+        # Auto-derive: assume S3 path is database/table, convert to catalog.database.table
+        # e.g., "federation_demo_db_ryan/customers_iceberg" -> "glue_catalog.federation_demo_db_ryan.customers_iceberg"
+        glue_table = f"{CATALOG_NAME}.{s3_prefix.replace('/', '.')}"
+    
+    return (s3_prefix, glue_table)
 
 
 def _acquire_lock(table_id: str) -> bool:
@@ -98,79 +132,93 @@ def _clear_retry_marker(table_id: str) -> None:
         pass
 
 
-def _enqueue_retry_for_table(table_id: str, bucket: str) -> bool:
+def _enqueue_retry_for_table(s3_prefix: str, glue_table: str, bucket: str) -> bool:
     """Queue ONE retry per table. Returns True if queued, False if already queued."""
     if not QUEUE_URL:
         return False
     
     # Check/set marker in DynamoDB to ensure only 1 retry per table
-    if not _mark_retry_queued(table_id):
+    if not _mark_retry_queued(s3_prefix):
         return False  # Retry already queued, skip
     
     sqs.send_message(
         QueueUrl=QUEUE_URL,
-        MessageBody=json.dumps({"table_id": table_id, "bucket": bucket}),
+        MessageBody=json.dumps({
+            "s3_prefix": s3_prefix,
+            "glue_table": glue_table,
+            "bucket": bucket
+        }),
         DelaySeconds=min(RETRY_DELAY_SECONDS, 900),  # SQS max is 900
     )
     return True
 
 
 def _extract_events(event):
-    # Supports EventBridge S3 events, S3 notifications, or SQS messages
+    """
+    Parse incoming events from EventBridge, S3 notifications, or SQS retries.
+    Returns list of tuples: (bucket, s3_key_or_none, s3_prefix_or_none, glue_table_or_none, is_retry)
+    """
     records = event.get("Records")
     if records is None and "detail" in event:
         records = [event]
 
     events = []
     for record in records or []:
-        # SQS
+        # SQS retry message
         if record.get("eventSource") == "aws:sqs":
             body = json.loads(record["body"])
-            # Handle both old format (bucket, key) and new format (table_id, bucket)
-            if "table_id" in body:
-                events.append((body["bucket"], body["table_id"], True))
+            if "glue_table" in body:
+                # New format with glue_table
+                events.append((body["bucket"], None, body["s3_prefix"], body["glue_table"], True))
+            elif "table_id" in body:
+                # Old format (backwards compatibility)
+                events.append((body["bucket"], None, body["table_id"], None, True))
             else:
-                events.append((body["bucket"], body["key"], False))
+                events.append((body["bucket"], body["key"], None, None, False))
             continue
 
         # EventBridge detail
         detail = record.get("detail", {})
         if "object" in detail and "bucket" in detail:
-            events.append((detail["bucket"]["name"], detail["object"]["key"], False))
+            events.append((detail["bucket"]["name"], detail["object"]["key"], None, None, False))
             continue
 
         # S3 notification
         s3 = record.get("s3")
         if s3:
-            events.append((s3["bucket"]["name"], s3["object"]["key"], False))
+            events.append((s3["bucket"]["name"], s3["object"]["key"], None, None, False))
 
     return events
 
 
 def handler(event, context):
-    # Deduplicate by table_id - only trigger ONE compaction per table
+    # Deduplicate by s3_prefix - only trigger ONE compaction per table
+    # tables_to_compact: {s3_prefix: (glue_table, bucket)}
     tables_to_compact = {}
     is_retry = False
 
-    for bucket, key_or_table_id, is_table_id in _extract_events(event):
-        if is_table_id:
-            # This is a retry message with table_id directly
-            table_id = key_or_table_id
+    for bucket, s3_key, s3_prefix, glue_table, is_retry_msg in _extract_events(event):
+        if is_retry_msg:
             is_retry = True
-            # Clear the retry marker since we're processing it now
-            _clear_retry_marker(table_id)
+            if glue_table:
+                # New retry format with glue_table
+                _clear_retry_marker(s3_prefix)
+            else:
+                # Old format - derive glue_table from s3_prefix
+                s3_prefix, glue_table = _table_id_from_key(s3_prefix + "/data/dummy")
+                _clear_retry_marker(s3_prefix)
         else:
-            # This is a delete file event
-            if not _is_delete_file(key_or_table_id):
+            # This is a delete file event from S3
+            if not s3_key or not _is_delete_file(s3_key):
                 continue
-            table_id = _table_id_from_key(key_or_table_id)
+            s3_prefix, glue_table = _table_id_from_key(s3_key)
         
-        if ALLOWLIST and table_id not in ALLOWLIST:
+        if ALLOWLIST and s3_prefix not in ALLOWLIST:
             continue
         
         # Only process each table once per invocation
-        if table_id not in tables_to_compact:
-            tables_to_compact[table_id] = bucket
+        if s3_prefix not in tables_to_compact:
+            tables_to_compact[s3_prefix] = (glue_table, bucket)
 
     if not tables_to_compact:
         return {"status": "no-op", "matched": 0}
@@ -182,23 +230,28 @@ def handler(event, context):
     retried = 0
     skipped = 0
 
-    for table_id, bucket in tables_to_compact.items():
-        if not _acquire_lock(table_id):
-            if _enqueue_retry_for_table(table_id, bucket):
+    for s3_prefix, (glue_table, bucket) in tables_to_compact.items():
+        if not _acquire_lock(s3_prefix):
+            if _enqueue_retry_for_table(s3_prefix, glue_table, bucket):
                 retried += 1
             else:
                 skipped += 1  # Retry already queued, skip
             continue
 
+        # Pass glue_table and warehouse to Step Function for dynamic compaction
         sf.start_execution(
             stateMachineArn=STEP_FUNCTION_ARN,
-            input=json.dumps({"table_id": table_id}),
+            input=json.dumps({
+                "table_id": s3_prefix,
+                "glue_table": glue_table,
+                "warehouse_s3": WAREHOUSE_S3 or f"s3://{bucket}/",
+            }),
         )
         triggered += 1
 
     return {
         "status": "triggered" if triggered > 0 else ("queued" if retried > 0 else "skipped"),
-        "tables": len(tables_to_compact),
+        "tables": list(tables_to_compact.keys()),
         "started": triggered,
         "retried": retried,
         "skipped": skipped,

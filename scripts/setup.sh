@@ -22,17 +22,19 @@ PROJECT_ROOT="$(cd "$WORKDIR/.." && pwd)"
 TMPDIR="${PROJECT_ROOT}/.tmp"
 mkdir -p "$TMPDIR"
 
-# 1) Generate compaction.scala with your table
-cat > "$TMPDIR/compaction.scala" <<SCALA
+# 1) Generate compaction.scala - reads table from TABLE_IDENT env var
+cat > "$TMPDIR/compaction.scala" <<'SCALA'
 import org.apache.iceberg.spark.actions.SparkActions
 import org.apache.iceberg.spark.Spark3Util
 
-val tableIdent = "${TABLE_IDENT}"
+// Read table identifier from environment variable (set by Step Function)
+val tableIdent = sys.env.getOrElse("TABLE_IDENT", throw new RuntimeException("TABLE_IDENT env var not set"))
+println(s"Compacting table: ${tableIdent}")
 val table = Spark3Util.loadIcebergTable(spark, tableIdent)
 
 def deleteFileCount(): Long = {
   spark
-    .sql(s"SELECT COUNT(1) AS c FROM \${tableIdent}.delete_files")
+    .sql(s"SELECT COUNT(1) AS c FROM ${tableIdent}.delete_files")
     .collect()(0)
     .getLong(0)
 }
@@ -40,12 +42,11 @@ def deleteFileCount(): Long = {
 val maxPasses = sys.env.getOrElse("COMPACTION_PASSES", "5").toInt
 var pass = 0
 var lastCount = deleteFileCount()
-println(s"Delete files before compaction: \${lastCount}")
+println(s"Delete files before compaction: ${lastCount}")
 
 while (pass < maxPasses && lastCount > 0) {
   pass += 1
   
-  // First, rewrite data files to merge positional deletes
   // rewrite-all=true ensures ALL delete files get cleaned up in one pass
   val dataResult = SparkActions.get(spark)
     .rewriteDataFiles(table)
@@ -55,11 +56,11 @@ while (pass < maxPasses && lastCount > 0) {
     .execute()
 
   println(
-    s"Pass \${pass} rewriteDataFiles: addedDataFiles=\${dataResult.addedDataFilesCount()}, " +
-      s"rewrittenDataFiles=\${dataResult.rewrittenDataFilesCount()}, " +
-      s"rewrittenBytes=\${dataResult.rewrittenBytesCount()}, " +
-      s"removedDeleteFiles=\${dataResult.removedDeleteFilesCount()}, " +
-      s"failedDataFiles=\${dataResult.failedDataFilesCount()}"
+    s"Pass ${pass} rewriteDataFiles: addedDataFiles=${dataResult.addedDataFilesCount()}, " +
+      s"rewrittenDataFiles=${dataResult.rewrittenDataFilesCount()}, " +
+      s"rewrittenBytes=${dataResult.rewrittenBytesCount()}, " +
+      s"removedDeleteFiles=${dataResult.removedDeleteFilesCount()}, " +
+      s"failedDataFiles=${dataResult.failedDataFilesCount()}"
   )
 
   // Then, compact any remaining position delete files
@@ -68,18 +69,18 @@ while (pass < maxPasses && lastCount > 0) {
       .rewritePositionDeletes(table)
       .execute()
     println(
-      s"Pass \${pass} rewritePositionDeletes: rewrittenFiles=\${deleteResult.rewrittenDeleteFilesCount()}, " +
-        s"addedFiles=\${deleteResult.addedDeleteFilesCount()}"
+      s"Pass ${pass} rewritePositionDeletes: rewrittenFiles=${deleteResult.rewrittenDeleteFilesCount()}, " +
+        s"addedFiles=${deleteResult.addedDeleteFilesCount()}"
     )
   } catch {
-    case e: Exception => println(s"rewritePositionDeletes skipped: \${e.getMessage}")
+    case e: Exception => println(s"rewritePositionDeletes skipped: ${e.getMessage}")
   }
 
   // Refresh table to get latest metadata
   table.refresh()
 
   val newCount = deleteFileCount()
-  println(s"Delete files after pass \${pass}: \${newCount}")
+  println(s"Delete files after pass ${pass}: ${newCount}")
   if (newCount >= lastCount && pass > 1) {
     println("Delete file count did not decrease after multiple passes; stopping.")
     lastCount = newCount
@@ -89,7 +90,7 @@ while (pass < maxPasses && lastCount > 0) {
   }
 }
 
-println(s"Final delete file count: \${lastCount}")
+println(s"Final delete file count: ${lastCount}")
 spark.stop()
 System.exit(0)
 SCALA
@@ -197,39 +198,33 @@ aws iam put-role-policy \
   --policy-name iceberg-delete-compaction-sfn \
   --policy-document file://"$TMPDIR/sfn_policy.json"
 
-# 5) Create Step Functions state machine (if it doesn't exist)
-python3 - <<PY > "$TMPDIR/state_machine.json"
-import json
-import pathlib
-
-mode = "${MODE}"
-step = json.loads(pathlib.Path("${TMPDIR}/emr_step.json").read_text())
-
-if mode == "event":
-    params = {
-        "ClusterId": "${EMR_CLUSTER_ID}",
-        "Step": step,
-    }
-else:
-    params = {
-        "ClusterId": "${EMR_CLUSTER_ID}",
-        "Step.$": "$.emrStep",
-    }
-
-sm = {
-  "Comment": "Run Iceberg delete compaction on EMR",
+# 5) Create Step Functions state machine with dynamic table support
+# The state machine receives {glue_table, warehouse_s3, table_id} from Lambda
+# and dynamically constructs the EMR step command
+cat > "$TMPDIR/state_machine.json" <<JSON
+{
+  "Comment": "Run Iceberg delete compaction on EMR - supports multiple tables",
   "StartAt": "AddEmrStep",
   "States": {
     "AddEmrStep": {
       "Type": "Task",
       "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
-      "Parameters": params,
-      "End": True
+      "Parameters": {
+        "ClusterId": "${EMR_CLUSTER_ID}",
+        "Step": {
+          "Name": "iceberg_delete_compaction",
+          "ActionOnFailure": "CONTINUE",
+          "HadoopJarStep": {
+            "Jar": "command-runner.jar",
+            "Args.$": "States.Array('bash', '-lc', States.Format('timeout 60m bash -lc \\'TABLE_IDENT={} WAREHOUSE_S3={} spark-shell --master yarn --deploy-mode client --num-executors 4 --executor-cores 2 --executor-memory 4g --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO --conf spark.sql.catalog.glue_catalog.warehouse={} --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.InstanceProfileCredentialsProvider --conf spark.dynamicAllocation.enabled=true --conf spark.dynamicAllocation.minExecutors=1 --conf spark.dynamicAllocation.maxExecutors=20 -i /home/hadoop/compaction.scala\\' <<< \\':quit\\'', \$.glue_table, \$.warehouse_s3, \$.warehouse_s3))"
+          }
+        }
+      },
+      "End": true
     }
   }
 }
-print(json.dumps(sm))
-PY
+JSON
 
 STATE_MACHINE_ARN=$(aws stepfunctions list-state-machines \
   --region "$AWS_REGION" \

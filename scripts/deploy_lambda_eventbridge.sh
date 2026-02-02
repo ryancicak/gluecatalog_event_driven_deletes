@@ -13,6 +13,12 @@ LOCK_TABLE_NAME="${LOCK_TABLE_NAME:-iceberg_delete_locks}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-300}"
 LOCK_TTL_SECONDS="${LOCK_TTL_SECONDS:-300}"
 TABLE_ALLOWLIST="${TABLE_ALLOWLIST:-}"
+CATALOG_NAME="${CATALOG_NAME:-glue_catalog}"
+WAREHOUSE_S3="${WAREHOUSE_S3:-s3://${BUCKET_NAME}/}"
+# TABLE_MAPPINGS: optional explicit mappings from S3 prefix to Glue table
+# Format: "s3_prefix1:db.table1,s3_prefix2:db.table2"
+# If not set, auto-derives db.table from S3 path (e.g., "mydb/mytable" -> "mydb.mytable")
+TABLE_MAPPINGS="${TABLE_MAPPINGS:-}"
 
 WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$WORKDIR/.." && pwd)"
@@ -95,9 +101,12 @@ QUEUE_ARN=$(aws sqs get-queue-attributes \
   --attribute-names QueueArn \
   --query Attributes.QueueArn --output text)
 
-ENV_VARS="STEP_FUNCTION_ARN=${STEP_FUNCTION_ARN},DELETE_SUFFIX=${DELETE_SUFFIX},LOCK_TABLE=${LOCK_TABLE_NAME},QUEUE_URL=${QUEUE_URL},RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS},LOCK_TTL_SECONDS=${LOCK_TTL_SECONDS}"
+ENV_VARS="STEP_FUNCTION_ARN=${STEP_FUNCTION_ARN},DELETE_SUFFIX=${DELETE_SUFFIX},LOCK_TABLE=${LOCK_TABLE_NAME},QUEUE_URL=${QUEUE_URL},RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS},LOCK_TTL_SECONDS=${LOCK_TTL_SECONDS},CATALOG_NAME=${CATALOG_NAME},WAREHOUSE_S3=${WAREHOUSE_S3}"
 if [ -n "$TABLE_ALLOWLIST" ]; then
   ENV_VARS="${ENV_VARS},TABLE_ALLOWLIST=${TABLE_ALLOWLIST}"
+fi
+if [ -n "$TABLE_MAPPINGS" ]; then
+  ENV_VARS="${ENV_VARS},TABLE_MAPPINGS=${TABLE_MAPPINGS}"
 fi
 
 # 2d) Attach policy for DynamoDB + SQS
@@ -107,7 +116,12 @@ cat > "$TMPDIR/lambda_ddb_sqs_policy.json" <<JSON
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["dynamodb:PutItem"],
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem"
+      ],
       "Resource": "arn:aws:dynamodb:${AWS_REGION}:*:table/${LOCK_TABLE_NAME}"
     },
     {
