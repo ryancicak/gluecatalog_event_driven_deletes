@@ -51,8 +51,6 @@ EMR Step (spark-shell compaction.scala)
 export AWS_REGION=us-west-2
 export EMR_CLUSTER_ID=j-XXXXXXXXXXXXX
 export EMR_KEY_PATH=/path/to/your-key.pem
-export TABLE_IDENT=glue_catalog.your_database.your_table
-export WAREHOUSE_S3=s3://your-bucket/
 ```
 
 ### 2. Run the setup script
@@ -87,12 +85,15 @@ aws s3api put-bucket-notification-configuration \
 
 This pipeline supports multiple tables automatically. When a delete file is created in S3, the Lambda:
 
-1. Extracts the S3 path (e.g., `mydb/mytable/data/...`)
-2. Converts it to a Glue table identifier (e.g., `glue_catalog.mydb.mytable`)
-3. Passes it to the Step Function
-4. Compacts only that specific table
+1. Detects which bucket the delete file is in
+2. Extracts the S3 path (e.g., `mydb/mytable/data/...`)
+3. Converts it to a Glue table identifier (e.g., `glue_catalog.mydb.mytable`)
+4. Passes the table and warehouse location to the Step Function
+5. Compacts only that specific table
 
 Each table has its own lock, so compactions for different tables can run in parallel.
+
+Tables can be in different S3 buckets. The pipeline automatically uses the bucket from the S3 event.
 
 ### Custom Table Mappings
 

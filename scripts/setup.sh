@@ -6,10 +6,12 @@ set -euo pipefail
 : "${EMR_CLUSTER_ID:?Set EMR_CLUSTER_ID}"
 : "${EMR_MASTER_DNS:=}"
 : "${EMR_KEY_PATH:?Set EMR_KEY_PATH (path to pem)}"
-: "${TABLE_IDENT:?Set TABLE_IDENT (e.g., glue_catalog.federation_demo_db_ryan.customers_iceberg)}"
-: "${WAREHOUSE_S3:?Set WAREHOUSE_S3 (e.g., s3://glue-federation-demo-332745928618/)}"
 
-# Optional
+# Optional - only needed for scheduled mode (event mode gets these dynamically)
+TABLE_IDENT="${TABLE_IDENT:-}"
+WAREHOUSE_S3="${WAREHOUSE_S3:-}"
+
+# Mode: scheduled (runs on a schedule for a single table) or event (triggered by S3 events, multi-table)
 MODE="${MODE:-scheduled}" # scheduled | event
 SCHEDULE_EXPRESSION="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
 STATE_MACHINE_NAME="${STATE_MACHINE_NAME:-iceberg-delete-compaction}"
