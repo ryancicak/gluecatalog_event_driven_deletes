@@ -68,16 +68,26 @@ This creates:
 
 ```bash
 export STEP_FUNCTION_ARN=arn:aws:states:us-west-2:ACCOUNT:stateMachine:iceberg-delete-compaction
-export BUCKET_NAME=your-bucket
+
+# Single bucket
+export BUCKET_NAMES=my-data-bucket
+
+# Or multiple buckets (comma-separated)
+export BUCKET_NAMES=bucket-a,bucket-b,bucket-c
 
 ./scripts/deploy_lambda_eventbridge.sh
 ```
 
-### 4. Enable S3 EventBridge notifications
+### 4. Enable S3 EventBridge notifications on each bucket
 
 ```bash
+# For each bucket, enable EventBridge notifications
 aws s3api put-bucket-notification-configuration \
-  --bucket $BUCKET_NAME \
+  --bucket bucket-a \
+  --notification-configuration '{"EventBridgeConfiguration": {}}'
+
+aws s3api put-bucket-notification-configuration \
+  --bucket bucket-b \
   --notification-configuration '{"EventBridgeConfiguration": {}}'
 ```
 

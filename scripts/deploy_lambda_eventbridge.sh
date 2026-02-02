@@ -3,7 +3,8 @@ set -euo pipefail
 
 : "${AWS_REGION:?Set AWS_REGION}"
 : "${STEP_FUNCTION_ARN:?Set STEP_FUNCTION_ARN}"
-: "${BUCKET_NAME:?Set BUCKET_NAME (e.g., glue-federation-demo-332745928618)}"
+# BUCKET_NAMES: comma-separated list of buckets to monitor (e.g., "bucket1,bucket2,bucket3")
+: "${BUCKET_NAMES:?Set BUCKET_NAMES (comma-separated, e.g., bucket1,bucket2)}"
 
 LAMBDA_FUNCTION_NAME="${LAMBDA_FUNCTION_NAME:-iceberg-delete-detector}"
 LAMBDA_ROLE_NAME="${LAMBDA_ROLE_NAME:-iceberg-delete-detector-role}"
@@ -14,7 +15,7 @@ RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-300}"
 LOCK_TTL_SECONDS="${LOCK_TTL_SECONDS:-300}"
 TABLE_ALLOWLIST="${TABLE_ALLOWLIST:-}"
 CATALOG_NAME="${CATALOG_NAME:-glue_catalog}"
-WAREHOUSE_S3="${WAREHOUSE_S3:-s3://${BUCKET_NAME}/}"
+WAREHOUSE_S3="${WAREHOUSE_S3:-}"
 # TABLE_MAPPINGS: optional explicit mappings from S3 prefix to Glue table
 # Format: "s3_prefix1:db.table1,s3_prefix2:db.table2"
 # If not set, auto-derives db.table from S3 path (e.g., "mydb/mytable" -> "mydb.mytable")
@@ -182,12 +183,15 @@ else
 fi
 
 # 5) Create or update EventBridge rule
+# Convert comma-separated BUCKET_NAMES to JSON array
+BUCKET_ARRAY=$(echo "$BUCKET_NAMES" | tr ',' '\n' | sed 's/^/"/;s/$/"/' | tr '\n' ',' | sed 's/,$//')
+
 cat > "$TMPDIR/event_rule.json" <<JSON
 {
   "source": ["aws.s3"],
   "detail-type": ["Object Created"],
   "detail": {
-    "bucket": {"name": ["${BUCKET_NAME}"]},
+    "bucket": {"name": [${BUCKET_ARRAY}]},
     "object": {"key": [{"suffix": "${DELETE_SUFFIX}"}]}
   }
 }
@@ -227,8 +231,11 @@ cat <<OUT
 Deployed:
 - Lambda: $FUNCTION_ARN
 - Event rule: $EVENT_RULE_NAME
-- Bucket: $BUCKET_NAME
+- Buckets: $BUCKET_NAMES
 - Delete suffix: $DELETE_SUFFIX
 - Lock table: $LOCK_TABLE_NAME
 - Retry queue: $QUEUE_URL
+
+Remember to enable EventBridge on each bucket:
+$(echo "$BUCKET_NAMES" | tr ',' '\n' | while read b; do echo "  aws s3api put-bucket-notification-configuration --bucket $b --notification-configuration '{\"EventBridgeConfiguration\": {}}'"; done)
 OUT
