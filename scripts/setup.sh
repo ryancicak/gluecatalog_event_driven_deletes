@@ -289,10 +289,10 @@ aws iam put-role-policy \
 
 # 7) Wire trigger
 if [ "$MODE" = "event" ]; then
-  : "${BUCKET_NAME:?Set BUCKET_NAME for event-driven mode}"
+  : "${BUCKET_NAMES:?Set BUCKET_NAMES for event-driven mode (comma-separated)}"
   export STEP_FUNCTION_ARN="$STATE_MACHINE_ARN"
   export AWS_REGION
-  export BUCKET_NAME
+  export BUCKET_NAMES
   export EVENT_RULE_NAME="${EVENT_RULE_NAME:-iceberg-delete-file-events}"
   export LAMBDA_FUNCTION_NAME="${LAMBDA_FUNCTION_NAME:-iceberg-delete-detector}"
   export LAMBDA_ROLE_NAME="${LAMBDA_ROLE_NAME:-iceberg-delete-detector-role}"
@@ -337,7 +337,7 @@ OUT
 if [ "$MODE" = "event" ]; then
   cat <<OUT
 - Mode: event-driven (Lambda + EventBridge S3)
-- Bucket: $BUCKET_NAME
+- Buckets: $BUCKET_NAMES
 - Delete suffix: ${DELETE_SUFFIX:--deletes.parquet}
 OUT
 else

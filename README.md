@@ -45,51 +45,38 @@ EMR Step (spark-shell compaction.scala)
 
 ## Quick Start
 
-### 1. Set environment variables
+### 1. Run setup.sh with MODE=event
+
+One command sets up everything:
 
 ```bash
 export AWS_REGION=us-west-2
 export EMR_CLUSTER_ID=j-XXXXXXXXXXXXX
 export EMR_KEY_PATH=/path/to/your-key.pem
-```
+export MODE=event
+export BUCKET_NAMES=my-bucket              # or comma-separated: bucket-a,bucket-b
 
-### 2. Run the setup script
-
-```bash
 ./scripts/setup.sh
 ```
 
 This creates:
-- IAM roles for Step Functions and EventBridge
+- IAM roles for Step Functions, EventBridge, and Lambda
 - Step Function state machine
+- Lambda function
+- EventBridge rule to detect delete files
+- DynamoDB lock table
+- SQS retry queue
 - Compaction script on EMR
 
-### 3. Deploy the Lambda and EventBridge rule
+### 2. Enable S3 EventBridge notifications on each bucket
 
 ```bash
-export STEP_FUNCTION_ARN=arn:aws:states:us-west-2:ACCOUNT:stateMachine:iceberg-delete-compaction
-
-# Single bucket
-export BUCKET_NAMES=my-data-bucket
-
-# Or multiple buckets (comma-separated)
-export BUCKET_NAMES=bucket-a,bucket-b,bucket-c
-
-./scripts/deploy_lambda_eventbridge.sh
-```
-
-### 4. Enable S3 EventBridge notifications on each bucket
-
-```bash
-# For each bucket, enable EventBridge notifications
 aws s3api put-bucket-notification-configuration \
-  --bucket bucket-a \
-  --notification-configuration '{"EventBridgeConfiguration": {}}'
-
-aws s3api put-bucket-notification-configuration \
-  --bucket bucket-b \
+  --bucket my-bucket \
   --notification-configuration '{"EventBridgeConfiguration": {}}'
 ```
+
+That's it! The pipeline will now automatically compact tables when delete files appear.
 
 ## Multiple Tables
 
