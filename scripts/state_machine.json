@@ -1,0 +1,15 @@
+{
+  "Comment": "Run Iceberg delete compaction on EMR",
+  "StartAt": "AddEmrStep",
+  "States": {
+    "AddEmrStep": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+      "Parameters": {
+        "ClusterId": "<EMR_CLUSTER_ID>",
+        "Step.$": "$.emrStep"
+      },
+      "End": true
+    }
+  }
+}

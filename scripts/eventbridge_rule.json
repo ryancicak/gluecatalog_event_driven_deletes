@@ -1,0 +1,13 @@
+{
+  "Name": "iceberg-delete-compaction-schedule",
+  "ScheduleExpression": "rate(1 hour)",
+  "State": "ENABLED",
+  "Targets": [
+    {
+      "Id": "run-step-function",
+      "Arn": "<STEP_FUNCTION_ARN>",
+      "RoleArn": "<EVENTBRIDGE_INVOKE_ROLE_ARN>",
+      "Input": "{\"emrStep\": <EMR_STEP_JSON>}"
+    }
+  ]
+}

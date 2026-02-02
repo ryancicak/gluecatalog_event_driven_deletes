@@ -1,0 +1,8 @@
+{
+  "source": ["aws.s3"],
+  "detail-type": ["Object Created"],
+  "detail": {
+    "bucket": {"name": ["glue-federation-demo-332745928618"]},
+    "object": {"key": [{"suffix": "-deletes.parquet"}]}
+  }
+}

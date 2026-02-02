@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticmapreduce:AddJobFlowSteps",
+        "elasticmapreduce:DescribeCluster",
+        "elasticmapreduce:DescribeStep",
+        "elasticmapreduce:CancelSteps",
+        "elasticmapreduce:ListSteps"
+      ],
+      "Resource": ["*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "events:PutTargets",
+        "events:PutRule",
+        "events:DescribeRule"
+      ],
+      "Resource": ["arn:aws:events:us-west-2:332745928618:rule/StepFunctionsGetEventForEMRAddJobFlowStepsRule"]
+    }
+  ]
+}
