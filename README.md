@@ -97,11 +97,20 @@ Tables can be in different S3 buckets. The pipeline automatically uses the bucke
 
 ### Custom Table Mappings
 
-If your S3 paths don't match your Glue database/table names, use `TABLE_MAPPINGS`:
+If your S3 paths don't match your Glue database/table names, use `TABLE_MAPPINGS`.
+
+The format is `s3_path:glue_db.glue_table` where `s3_path` is the path within the bucket (not including `s3://` or bucket name):
 
 ```bash
-export TABLE_MAPPINGS="custom_path/my_table:actual_db.actual_table,another_path:other_db.other_table"
+# Example: table is at s3://mybucket/warehouse/sales/orders/data/...
+# but Glue table is production_db.orders_table
+export TABLE_MAPPINGS="warehouse/sales/orders:production_db.orders_table"
 ./scripts/deploy_lambda_eventbridge.sh
+```
+
+Multiple mappings separated by commas:
+```bash
+export TABLE_MAPPINGS="path1/table1:db1.table1,path2/table2:db2.table2"
 ```
 
 ### Allowlist Specific Tables
