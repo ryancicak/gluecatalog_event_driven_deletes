@@ -50,11 +50,26 @@ EMR Step (spark-shell compaction.scala)
 One command sets up everything:
 
 ```bash
+# Required
 export AWS_REGION=us-west-2
 export EMR_CLUSTER_ID=j-XXXXXXXXXXXXX
 export EMR_KEY_PATH=/path/to/your-key.pem
 export MODE=event
-export BUCKET_NAMES=my-bucket              # or comma-separated: bucket-a,bucket-b
+export BUCKET_NAMES=my-bucket                # comma-separated for multiple: bucket-a,bucket-b
+
+# Optional (defaults shown)
+export CATALOG_NAME=glue_catalog             # Spark catalog name
+export DELETE_SUFFIX=-deletes.parquet        # suffix to detect delete files
+export LOCK_TTL_SECONDS=300                  # how long to hold lock during compaction
+export RETRY_DELAY_SECONDS=300               # delay before retry if locked
+export TABLE_ALLOWLIST=                      # limit to specific tables (comma-separated S3 prefixes)
+export TABLE_MAPPINGS=                       # custom S3 path to Glue table mappings
+
+# Resource naming (defaults shown)
+export STATE_MACHINE_NAME=iceberg-delete-compaction
+export LAMBDA_FUNCTION_NAME=iceberg-delete-detector
+export EVENT_RULE_NAME=iceberg-delete-file-events
+export LOCK_TABLE_NAME=iceberg_delete_locks
 
 ./scripts/setup.sh
 ```
